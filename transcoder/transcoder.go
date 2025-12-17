@@ -10,12 +10,13 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func StartTranscoding(inputFile, videoName string, resolutions map[string]int) error {
+func StartTranscoding(inputFile, videoName string, resolutions map[string]int, duration float64) error {
 	g, ctx := errgroup.WithContext(context.Background())
 	for folder, height := range resolutions {
 		folderName := folder
 		targetHeight := height
 		g.Go(func() error {
+
 			err := createDirectory(videoName, folderName)
 			if err != nil {
 				return fmt.Errorf("error creating directory for %s: %v", folderName, err)
@@ -28,7 +29,19 @@ func StartTranscoding(inputFile, videoName string, resolutions map[string]int) e
 			)
 
 			cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-			if err := cmd.Run(); err != nil {
+
+			stdErr, err := cmd.StderrPipe()
+			if err != nil {
+				return fmt.Errorf("failed to get stderr pipe: %v", err)
+			}
+
+			if err := cmd.Start(); err != nil {
+				return fmt.Errorf("failed to start ffmpeg for %s: %v", folderName, err)
+			}
+
+			go MonitorProgress(folderName, stdErr, duration)
+
+			if err := cmd.Wait(); err != nil {
 				return fmt.Errorf("ffmpeg failed for %s: %v", folderName, err)
 			}
 
