@@ -1,0 +1,13 @@
+output/
+uploads/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.ts
+*.log
+*.tmp
+*.cache
+
+*.toml
+tmp/

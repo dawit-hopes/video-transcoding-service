@@ -6,17 +6,33 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
 
-func StartTranscoding(inputFile, videoName string, resolutions map[string]int, duration float64) error {
+func StartTranscoding(inputFile, videoName string, resolutions map[string]int, duration float64) (chan VariantInfo, error) {
 	g, ctx := errgroup.WithContext(context.Background())
+	sem := make(chan struct{}, 2)
+	results := make(chan VariantInfo, len(resolutions))
+
+	mu.Lock()
+	for folder := range resolutions {
+		allProgress[folder] = 0.0
+		fmt.Println()
+	}
+	mu.Unlock()
+
+	uiCtx, cancelUI := context.WithCancel(ctx)
+	go StartUI(uiCtx, len(resolutions))
+
 	for folder, height := range resolutions {
 		folderName := folder
 		targetHeight := height
 		g.Go(func() error {
 
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			err := createDirectory(videoName, folderName)
 			if err != nil {
 				return fmt.Errorf("error creating directory for %s: %v", folderName, err)
@@ -45,12 +61,19 @@ func StartTranscoding(inputFile, videoName string, resolutions map[string]int, d
 				return fmt.Errorf("ffmpeg failed for %s: %v", folderName, err)
 			}
 
-			width, bitrate, err := GetVariantMetadata(filepath.Join("output", videoName, folderName, "seg_000.ts"))
+			time.Sleep(500 * time.Millisecond)
+			pattern := filepath.Join("output", videoName, folderName, "*.ts")
+			matches, err := filepath.Glob(pattern)
+			if err != nil || len(matches) == 0 {
+				return fmt.Errorf("metadata error: no segments found in %s (checked %s)", folderName, pattern)
+			}
+
+			width, bitrate, err := GetVariantMetadata(matches[0])
 			if err != nil {
 				return fmt.Errorf("failed to get variant metadata for %s: %v", folderName, err)
 			}
 
-			Results <- VariantInfo{
+			results <- VariantInfo{
 				Height:     targetHeight,
 				Width:      width,
 				Bandwidth:  bitrate,
@@ -64,11 +87,13 @@ func StartTranscoding(inputFile, videoName string, resolutions map[string]int, d
 	}
 
 	if err := g.Wait(); err != nil {
-		return err
+		cancelUI()
+		return nil, err
 	}
 
-	CloseResultsChannel()
-	return nil
+	CloseResultsChannel(results, cancelUI)
+
+	return results, nil
 }
 
 func createDirectory(fileName, resolution string) error {

@@ -2,11 +2,14 @@ package transcoder
 
 import (
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 type FileUpload struct {
@@ -15,9 +18,9 @@ type FileUpload struct {
 
 func (f *FileUpload) ValidateFile(file multipart.File, header *multipart.FileHeader) error {
 	// 1. Check Size
-	const maxFileSize = 20 * 1024 * 1024 // 20MB
+	const maxFileSize = 800 * 1024 * 1024 // 800MB
 	if header.Size > maxFileSize {
-		return fmt.Errorf("file too large: %d bytes (max 20MB)", header.Size)
+		return fmt.Errorf("file too large: %d bytes (max 800MB)", header.Size)
 	}
 
 	// 2. Check Content Type (Sniffing)
@@ -26,12 +29,19 @@ func (f *FileUpload) ValidateFile(file multipart.File, header *multipart.FileHea
 	if err != nil {
 		return err
 	}
-	// Reset file pointer so the transcoder can read from the start later
 	file.Seek(0, 0)
 
 	contentType := http.DetectContentType(buffer)
-	if !strings.HasPrefix(contentType, "video/") {
-		return fmt.Errorf("invalid file type: %s", contentType)
+
+	// Check if it's a video OR if it has a common video extension as a fallback
+	isVid := strings.HasPrefix(contentType, "video/")
+
+	// Fallback: Check extension if sniffing is ambiguous
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	isValidExt := ext == ".mov" || ext == ".mp4" || ext == ".mkv" || ext == ".avi"
+
+	if !isVid && !isValidExt {
+		return fmt.Errorf("invalid file type: %s (extension: %s)", contentType, ext)
 	}
 
 	return nil
@@ -73,6 +83,7 @@ func GenerateMasterPlaylist(videoName string, results chan VariantInfo) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -88,4 +99,30 @@ func sortVariantsByHeight(variants []VariantInfo) []VariantInfo {
 		}
 	}
 	return sorted
+}
+
+func StoreFile(file multipart.File, header *multipart.FileHeader) (string, error) {
+	if err := os.MkdirAll("uploads", 0755); err != nil {
+		return "", err
+	}
+
+	fileName := uuid.New().String() + filepath.Ext(header.Filename)
+	filePath := filepath.Join("uploads", fileName)
+	out, err := os.Create(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+
+	_, err = file.Seek(0, 0)
+	if err != nil {
+		return "", err
+	}
+
+	_, err = io.Copy(out, file)
+	if err != nil {
+		return "", err
+	}
+
+	return filePath, nil
 }

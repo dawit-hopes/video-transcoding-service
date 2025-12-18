@@ -14,7 +14,6 @@ func StartUI(ctx context.Context, folderCount int) {
 	for {
 		select {
 		case <-ctx.Done():
-			// Final update before exiting
 			drawBars(folderCount)
 			return
 		case <-ticker.C:
