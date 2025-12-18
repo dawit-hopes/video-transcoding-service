@@ -1,7 +1,8 @@
-package transcoder
+package service
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Progress struct {
@@ -16,21 +18,42 @@ type Progress struct {
 	Percent float64
 }
 
-var allProgress = make(map[string]float64)
 var mu sync.Mutex
 
+var allProgress = make(map[string]float64)
 var timeRegex = regexp.MustCompile(`time=(\d{2}:\d{2}:\d{2}\.\d{2})`)
 
-// extractTime searches a line of ffmpeg output for the timestamp
-func extractTime(line string) string {
-	match := timeRegex.FindStringSubmatch(line)
-	if len(match) > 1 {
-		return match[1] // Returns the "00:00:05.00" part
-	}
-	return ""
+type progressUI struct{}
+
+type ProgressUIService interface {
+	StartUI(ctx context.Context, folderCount int)
+	GetDuration(inputPath string) (float64, error)
+	MonitorProgress(folderName string, stderrPipe io.ReadCloser, totalDuration float64)
+	TimeToSeconds(timeStr string) (float64, error)
 }
 
-func GetDuration(inputPath string) (float64, error) {
+func NewProgressUI() ProgressUIService {
+	return &progressUI{}
+}
+
+// StartUI begins the progress UI that updates the progress bars periodically
+func (p *progressUI) StartUI(ctx context.Context, folderCount int) {
+	ticker := time.NewTicker(200 * time.Millisecond) // Smooth updates
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			drawBars(folderCount)
+			return
+		case <-ticker.C:
+			drawBars(folderCount)
+		}
+	}
+}
+
+// GetDuration retrieves the total duration of the input video file using ffprobe
+func (p *progressUI) GetDuration(inputPath string) (float64, error) {
 	args := []string{
 		"-v", "error",
 		"-show_entries", "format=duration",
@@ -52,7 +75,8 @@ func GetDuration(inputPath string) (float64, error) {
 	return duration, nil
 }
 
-func TimeToSeconds(timeStr string) (float64, error) {
+// TimeToSeconds converts a time string in "HH:MM:SS.ss" format to total seconds as float64
+func (p *progressUI) TimeToSeconds(timeStr string) (float64, error) {
 	// 1. Split "00:01:30.00" into ["00", "01", "30.00"]
 	parts := strings.Split(timeStr, ":")
 	if len(parts) != 3 {
@@ -68,13 +92,14 @@ func TimeToSeconds(timeStr string) (float64, error) {
 	return h*3600 + m*60 + s, nil
 }
 
-func MonitorProgress(folderName string, stderrPipe io.ReadCloser, totalDuration float64) {
+// MonitorProgress reads ffmpeg stderr output to track progress for a specific folder
+func (p *progressUI) MonitorProgress(folderName string, stderrPipe io.ReadCloser, totalDuration float64) {
 	scanner := bufio.NewScanner(stderrPipe)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, "time=") {
 			timeStr := extractTime(line)
-			currentSec, _ := TimeToSeconds(timeStr)
+			currentSec, _ := p.TimeToSeconds(timeStr)
 
 			mu.Lock()
 			allProgress[folderName] = (currentSec / totalDuration) * 100

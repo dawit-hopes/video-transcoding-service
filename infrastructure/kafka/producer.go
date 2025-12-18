@@ -1,0 +1,62 @@
+package kafka
+
+import (
+	"go-transcoder/service"
+	"log"
+
+	"github.com/confluentinc/confluent-kafka-go/kafka"
+)
+
+type Producer struct {
+	Producer          *kafka.Producer
+	transcoderService service.TranscodeService
+}
+
+type ProducerInterface interface {
+	Produce(topic string, key []byte, value []byte) error
+}
+
+func NewProducer(transcoderService service.TranscodeService) ProducerInterface {
+	confluentProducer, err := kafka.NewProducer(
+		&kafka.ConfigMap{
+			"bootstrap.servers": "localhost:9092",
+			"security.protocol": "PLAINTEXT",
+		})
+
+	if err != nil {
+		panic(err)
+	}
+
+	go func() {
+		for e := range confluentProducer.Events() {
+			switch ev := e.(type) {
+			case *kafka.Message:
+				if ev.TopicPartition.Error != nil {
+					// Handle delivery error
+					log.Printf("Delivery failed: %v\n", ev.TopicPartition)
+				}
+			}
+		}
+	}()
+	return &Producer{
+		Producer:          confluentProducer,
+		transcoderService: transcoderService,
+	}
+}
+
+func (p *Producer) Produce(topic string, key []byte, value []byte) error {
+	deliveryChan := make(chan kafka.Event)
+
+	err := p.Producer.Produce(&kafka.Message{
+		TopicPartition: kafka.TopicPartition{Topic: &topic, Partition: kafka.PartitionAny},
+		Key:            key,
+		Value:          value,
+	}, deliveryChan)
+
+	e := <-deliveryChan
+	m := e.(*kafka.Message)
+	if m.TopicPartition.Error != nil {
+		return m.TopicPartition.Error
+	}
+	return err
+}

@@ -3,7 +3,8 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"go-transcoder/transcoder"
+	"go-transcoder/infrastructure/kafka"
+	"go-transcoder/service"
 	"log"
 	"net/http"
 	"os"
@@ -18,16 +19,32 @@ type UploadResponse struct {
 	PlaybackURL string `json:"playback_url"`
 }
 
-func Server() {
+type ServerService struct {
+	transcoder    service.TranscodeService
+	kafkaProducer kafka.ProducerInterface
+	uiService     service.ProgressUIService
+}
+
+type ServerServiceInterface interface {
+	Server()
+}
+
+func NewServerService(transcoder service.TranscodeService, kafkaProducer kafka.ProducerInterface, uiService service.ProgressUIService) ServerServiceInterface {
+	return &ServerService{
+		transcoder:    transcoder,
+		kafkaProducer: kafkaProducer,
+		uiService:     uiService,
+	}
+}
+
+func (s *ServerService) Server() {
 	mux := http.NewServeMux()
 
-	// 1. Static file server: Serves the 'output' folder via the '/videos/' URL
-	// Example: http://localhost:8080/videos/myvideo/master.m3u8
 	mux.Handle("/videos/", http.StripPrefix("/videos/", http.FileServer(http.Dir("output"))))
 
 	// 2. Upload Endpoint
 	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
-		var uploadHandler transcoder.FileUpload
+		var uploadHandler FileUpload
 
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -54,7 +71,7 @@ func Server() {
 		}
 
 		// Save the file to the local disk temporarily
-		filePath, err := transcoder.StoreFile(file, header)
+		filePath, err := s.transcoder.StoreFile(file, header)
 		if err != nil {
 			http.Error(w, "Failed to store file", http.StatusInternalServerError)
 			return
@@ -64,41 +81,29 @@ func Server() {
 		videoName := strings.TrimSuffix(header.Filename, filepath.Ext(header.Filename))
 		playbackURL := fmt.Sprintf("/videos/%s/master.m3u8", videoName)
 
-		// ASYNC BLOCK: Transcoding happens in the background
 		go func() {
-			defer os.Remove(filePath) // Clean up the original uploaded file when done
 
-			duration, _ := transcoder.GetDuration(filePath)
-			_, originalHeight, _ := transcoder.GetVariantMetadata(filePath)
+			duration, _ := s.uiService.GetDuration(filePath)
+			_, originalHeight, _, _ := s.transcoder.GetVariantMetadata(filePath)
 
-			filteredResolutions := make(map[string]int)
-			for folder, height := range transcoder.Resolutions {
-				if height <= originalHeight {
-					filteredResolutions[folder] = height
-				} else {
-					log.Printf("Skipping %s (%dp) as it exceeds original height (%dp)", folder, height, originalHeight)
-				}
+			job := kafka.TranscodeJob{
+				FilePath:  filePath,
+				VideoName: videoName,
+				Duration:  duration,
+				MaxHeight: originalHeight,
+				VideoID:   videoName,
 			}
 
-			if len(filteredResolutions) == 0 {
-				filteredResolutions["original"] = originalHeight
-			}
-			log.Printf("Starting background transcode for: %s", videoName)
-
-			resultChan, err := transcoder.StartTranscoding(filePath, videoName, filteredResolutions, duration)
-			if err != nil {
-				log.Printf("Transcoding error for %s: %v", videoName, err)
-				return
+			jobBytes, _ := json.Marshal(job)
+			if err := s.kafkaProducer.Produce("transcoding-jobs", []byte(videoName), jobBytes); err != nil {
+				log.Printf("Failed to produce Kafka message for %s: %v", videoName, err)
+			} else {
+				log.Printf("Enqueued transcoding job for %s", videoName)
 			}
 
-			if err := transcoder.GenerateMasterPlaylist(videoName, resultChan); err != nil {
-				log.Printf("Playlist error for %s: %v", videoName, err)
-				return
-			}
 			log.Printf("Successfully finished transcoding: %s", videoName)
 		}()
 
-		// Respond to client immediately with JSON
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 
