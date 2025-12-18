@@ -6,6 +6,8 @@ import (
 	"go-transcoder/server"
 	"go-transcoder/service"
 	"log"
+	"log/slog"
+
 )
 
 func main() {
@@ -22,7 +24,7 @@ func main() {
 	case "worker":
 		runWorker(services)
 	case "all":
-		log.Println("Starting in 'all' mode (API + Worker)...")
+		slog.Info("Starting in 'all' mode (API + Worker)...")
 		go runWorker(services)
 		runAPI(services)
 	default:
@@ -34,14 +36,14 @@ func runAPI(services *service.Service) {
 	kafkaProducer := kafka.NewProducer(services.Transcode)
 	s := server.NewServerService(services.Transcode, kafkaProducer, services.ProgressUI)
 
-	log.Println("Initializing API Server...")
+	slog.Info("Initializing API Server...")
 	s.Server()
 }
 
 func runWorker(services *service.Service) {
 	kafkaConsumer := kafka.NewConsumer(services.Transcode)
 
-	log.Println("Initializing Transcoder Worker...")
+	slog.Info("Initializing Transcoder Worker...")
 	kafkaConsumer.RunWorker()
 
 	select {}

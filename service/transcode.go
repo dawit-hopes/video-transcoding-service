@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )
@@ -50,6 +52,7 @@ func (s *transcodeService) GenerateMasterPlaylist(videoName string, results chan
 	defer f.Close()
 
 	if _, err := f.WriteString("#EXTM3U\n"); err != nil {
+		slog.Error("Failed to write to master playlist", "error", err)
 		return err
 	}
 
@@ -62,6 +65,7 @@ func (s *transcodeService) GenerateMasterPlaylist(videoName string, results chan
 	resultsSlice = sortVariantsByHeight(resultsSlice)
 
 	if len(resultsSlice) == 0 {
+		slog.Error("No variant info available to generate master playlist")
 		return fmt.Errorf("no variant info available to generate master playlist")
 	}
 
@@ -71,9 +75,11 @@ func (s *transcodeService) GenerateMasterPlaylist(videoName string, results chan
 		line2 := fmt.Sprintf("%s/index.m3u8\n", variant.FolderName)
 
 		if _, err := f.WriteString(line1); err != nil {
+			slog.Error("Failed to write to master playlist", "error", err)
 			return err
 		}
 		if _, err := f.WriteString(line2); err != nil {
+			slog.Error("Failed to write to master playlist", "error", err)
 			return err
 		}
 	}
@@ -91,17 +97,20 @@ func (s *transcodeService) StoreFile(file multipart.File, header *multipart.File
 	filePath := filepath.Join("uploads", fileName)
 	out, err := os.Create(filePath)
 	if err != nil {
+		slog.Error("Failed to create file", "error", err)
 		return "", err
 	}
 	defer out.Close()
 
 	_, err = file.Seek(0, 0)
 	if err != nil {
+		slog.Error("Failed to seek file", "error", err)
 		return "", err
 	}
 
 	_, err = io.Copy(out, file)
 	if err != nil {
+		slog.Error("Failed to save file", "error", err)
 		return "", err
 	}
 
@@ -125,12 +134,14 @@ func (s *transcodeService) GetExactBitrate(segmentPath string) (int, error) {
 
 	out, err := exec.Command("ffprobe", args...).Output()
 	if err != nil {
+		slog.Error("ffprobe command failed", "error", err)
 		return 0, fmt.Errorf("ffprobe failed: %v", err)
 	}
 
 	bitrateStr := strings.TrimSpace(string(out))
 	bitrate, err := strconv.Atoi(bitrateStr)
 	if err != nil {
+		slog.Error("Failed to parse bitrate", "bitrateStr", bitrateStr, "error", err)
 		return 0, fmt.Errorf("failed to parse bitrate '%s': %v", bitrateStr, err)
 	}
 
@@ -150,6 +161,7 @@ func (s *transcodeService) GetVariantMetadata(segmentPath string) (width int, he
 
 	out, err := exec.Command("ffprobe", args...).Output()
 	if err != nil {
+		slog.Error("ffprobe command failed", "error", err)
 		return 0, 0, 0, fmt.Errorf("ffprobe failed: %v", err)
 	}
 
@@ -218,6 +230,7 @@ func (s *transcodeService) StartTranscoding(inputFile, videoName string, resolut
 			defer func() { <-sem }()
 			err := createDirectory(videoName, folderName)
 			if err != nil {
+				slog.Error("Failed to create directory", "folderName", folderName, "error", err)
 				return fmt.Errorf("error creating directory for %s: %v", folderName, err)
 			}
 
@@ -231,16 +244,19 @@ func (s *transcodeService) StartTranscoding(inputFile, videoName string, resolut
 
 			stdErr, err := cmd.StderrPipe()
 			if err != nil {
+				slog.Error("Failed to get stderr pipe", "folderName", folderName, "error", err)
 				return fmt.Errorf("failed to get stderr pipe: %v", err)
 			}
 
 			if err := cmd.Start(); err != nil {
+				slog.Error("Failed to start ffmpeg", "folderName", folderName, "error", err)
 				return fmt.Errorf("failed to start ffmpeg for %s: %v", folderName, err)
 			}
 
 			go s.progressUI.MonitorProgress(folderName, stdErr, duration)
 
 			if err := cmd.Wait(); err != nil {
+				slog.Error("ffmpeg command failed", "folderName", folderName, "error", err)
 				return fmt.Errorf("ffmpeg failed for %s: %v", folderName, err)
 			}
 
@@ -248,11 +264,13 @@ func (s *transcodeService) StartTranscoding(inputFile, videoName string, resolut
 			pattern := filepath.Join("output", videoName, folderName, "*.ts")
 			matches, err := filepath.Glob(pattern)
 			if err != nil || len(matches) == 0 {
+				slog.Error("No segments found after transcoding", "folderName", folderName, "pattern", pattern, "error", err)
 				return fmt.Errorf("metadata error: no segments found in %s (checked %s)", folderName, pattern)
 			}
 
 			width, _, bitrate, err := s.GetVariantMetadata(matches[0])
 			if err != nil {
+				slog.Error("Failed to get variant metadata", "folderName", folderName, "error", err)
 				return fmt.Errorf("failed to get variant metadata for %s: %v", folderName, err)
 			}
 
@@ -285,6 +303,7 @@ func createDirectory(fileName, resolution string) error {
 
 	err := os.MkdirAll(targetDir, 0755)
 	if err != nil {
+		slog.Error("Failed to create directory", "targetDir", targetDir, "error", err)
 		return fmt.Errorf("failed to create directory %s: %v", targetDir, err)
 	}
 

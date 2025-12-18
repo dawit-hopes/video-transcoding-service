@@ -5,6 +5,8 @@ import (
 	"go-transcoder/service"
 	"log"
 
+	"log/slog"
+
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
 
@@ -22,9 +24,10 @@ func NewConsumer(transcoder service.TranscodeService) Consumer {
 
 func (c *consumerService) RunWorker() {
 	consumer, err := kafka.NewConsumer(&kafka.ConfigMap{
-		"bootstrap.servers": "localhost:9092",
-		"group.id":          "transcoder-group",
-		"auto.offset.reset": "earliest",
+		"bootstrap.servers":  "localhost:9092",
+		"group.id":           "transcoder-group",
+		"auto.offset.reset":  "earliest",
+		"enable.auto.commit": false,
 	})
 
 	if err != nil {
@@ -39,27 +42,33 @@ func (c *consumerService) RunWorker() {
 	for {
 		msg, err := consumer.ReadMessage(-1)
 		if err != nil {
-			log.Printf("Consumer error: %v (%v)\n", err, msg)
+			slog.Error("Consumer error", "error", err, "message", msg)
 			continue
 		}
 
 		var job TranscodeJob
 		if err := json.Unmarshal(msg.Value, &job); err != nil {
-			log.Printf("Failed to unmarshal message: %s", err)
+			slog.Error("Failed to unmarshal message", "error", err)
 			continue
 		}
 
-		log.Printf(">>> Processing Job: %s (File: %s)", job.VideoName, job.FilePath)
-
+		slog.Info(">>> Processing Job", "VideoName", job.VideoName, "FilePath", job.FilePath)
 		targets := filterResolutions(job.MaxHeight)
 
 		results, err := c.transcoder.StartTranscoding(job.FilePath, job.VideoName, targets, job.Duration)
 		if err == nil {
 			if err := c.transcoder.GenerateMasterPlaylist(job.VideoName, results); err == nil {
-				log.Printf("SUCCESS: Finished %s", job.VideoName)
+				slog.Info("SUCCESS: Finished", "VideoName", job.VideoName)
 			}
+
+			_, err := consumer.CommitMessage(msg)
+			if err != nil {
+				slog.Error("Failed to commit message", "error", err)
+			}
+
+			slog.Info("Successfully processed job", "VideoName", job.VideoName)
 		} else {
-			log.Printf("ERROR: Transcoding failed for %s: %v", job.VideoName, err)
+			slog.Error("Transcoding failed", "VideoName", job.VideoName, "error", err)
 		}
 	}
 }

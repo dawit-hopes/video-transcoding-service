@@ -3,6 +3,8 @@ package kafka
 import (
 	"go-transcoder/service"
 	"log"
+	"log/slog"
+
 
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 )
@@ -24,7 +26,7 @@ func NewProducer(transcoderService service.TranscodeService) ProducerInterface {
 		})
 
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to create producer: %s", err)
 	}
 
 	go func() {
@@ -32,8 +34,7 @@ func NewProducer(transcoderService service.TranscodeService) ProducerInterface {
 			switch ev := e.(type) {
 			case *kafka.Message:
 				if ev.TopicPartition.Error != nil {
-					// Handle delivery error
-					log.Printf("Delivery failed: %v\n", ev.TopicPartition)
+					slog.Error("Delivery failed", "error", ev.TopicPartition.Error)
 				}
 			}
 		}
@@ -56,6 +57,7 @@ func (p *Producer) Produce(topic string, key []byte, value []byte) error {
 	e := <-deliveryChan
 	m := e.(*kafka.Message)
 	if m.TopicPartition.Error != nil {
+		slog.Error("Failed to deliver message", "error", m.TopicPartition.Error)
 		return m.TopicPartition.Error
 	}
 	return err
