@@ -28,6 +28,7 @@ func (c *consumerService) RunWorker() {
 		"group.id":           "transcoder-group",
 		"auto.offset.reset":  "earliest",
 		"enable.auto.commit": false,
+		
 	})
 
 	if err != nil {
